@@ -1,6 +1,5 @@
 import os
 import re
-import wget
 from bs4 import BeautifulSoup
 import urllib3
 import certifi
@@ -13,14 +12,14 @@ def get_blender_download_page_links(url):
     if req.status != 200:
         raise Exception(
             "'{}' does not exist (error {})".format(url, req.status))
-    soup = BeautifulSoup(req.data)
+    soup = BeautifulSoup(req.data, "html5lib")
     for tag in soup.findAll('a'):
         link = tag['href']
         if 'blender' in link.lower():
             yield os.path.join(url, link.rstrip('/'))
 
 
-def get_blender_release_versions():
+def get_blender_web_archive_version_links():
     versions = {}
     regex = re.compile(r'[Bb]lender(\d+)\.(\d+)([a-z]*)')
     for url in get_blender_download_page_links(RELEASE_URL):
@@ -51,8 +50,8 @@ def get_blender_release_versions():
 RELEASE_URL = 'http://download.blender.org/release/'
 
 
-def get_blender_release_downloads(version, platform=None):
-    versions = get_blender_release_versions()
+def get_blender_version_download_links(version, platform=None):
+    versions = get_blender_web_archive_version_links()
     url = versions[version]
     download_links = list(get_blender_download_page_links(url))
     if platform is None:
@@ -74,10 +73,10 @@ if __name__ == '__main__':
     # for link in get_blender_links(RELEASE_URL):
     #     print(link)
 
-    # version_urls = get_blender_release_versions()
+    # version_urls = get_blender_web_archive_version_links()
     # for version, url in version_urls.items():
     #     print("{}: {}".format(version, url))
-    downloads = get_blender_release_downloads('1.80', 'mac')
+    downloads = get_blender_version_download_links('1.80', 'mac')
     for download in downloads:
         print(download)
     # print(get_blender_release_downloads('2.80', 'macos'))
