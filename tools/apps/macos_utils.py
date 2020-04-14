@@ -1,7 +1,7 @@
 import os
 import re
 import plistlib
-from utils import search_filesystem
+from .utils import search_filesystem
 
 
 def locate_unity_versions_macos():

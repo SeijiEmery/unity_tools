@@ -4,18 +4,18 @@ import platform
 # print(platform.system())
 operating_system = platform.system().lower()
 if operating_system == 'darwin':
-    from blender_utils_macos import get_installed_blender_versions
+    from .blender_utils_macos import get_installed_blender_versions
     operating_system_name = 'macos'
 elif operating_system == 'linux':
-    from blender_utils_linux import get_installed_blender_versions
+    from .blender_utils_linux import get_installed_blender_versions
     operating_system_name = 'linux'
 elif operating_system == 'windows':
-    from blender_utils_windows import get_installed_blender_versions
+    from .blender_utils_windows import get_installed_blender_versions
     operating_system_name = 'windows'
 else:
     raise Exception("Unimplemented for OS {}".format(operating_system))
 
-from blender_utils_web import get_blender_version_download_links
+from .blender_utils_web import get_blender_version_download_links
 
 
 def find_blender(version):

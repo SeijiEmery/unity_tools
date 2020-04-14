@@ -1,6 +1,6 @@
 import subprocess
 import re
-from macos_utils import locate_macos_apps_with_executable_name
+from .macos_utils import locate_macos_apps_with_executable_name
 
 
 def get_installed_blender_versions():
