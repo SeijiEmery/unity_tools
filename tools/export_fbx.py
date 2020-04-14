@@ -5,10 +5,14 @@ from run_bpy_script import run_blender_script
 
 
 def export_fbx(input_blend_file, output=None, **kwargs):
+    default_args = {
+        'global_scale': 1e-3
+    }
+    default_args.update(kwargs)
+    kwargs = default_args
     run_blender_script('export_fbx.py',
         blend_file=input_blend_file,
         output=output,
-        global_scale=1e-3,
         **kwargs)
 
 
