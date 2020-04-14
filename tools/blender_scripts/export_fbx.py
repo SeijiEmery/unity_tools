@@ -3,23 +3,44 @@ import sys
 import os
 
 
+def print_material_connections(node, indent):
+    if not node:
+        return
+    for output_node in node.outputs:
+        for link in output_node.links:
+            if link.to_node:
+                print("{indent}{} '{}' {} as {} {}\n{indent}  -> linked to {} '{}' {} as {} {}".format(
+                    node.type, node.name, node,
+                    link.from_socket.type, link.from_socket,
+                    link.to_node.type, link.to_node.name,
+                    link.to_node, link.to_socket.type, link.to_socket,
+                    indent='  '*indent))
+                print_material_connections(link.to_node, indent=indent+1)
+
+
 def _export_textures(export_dir):
     """ Export all textures in this scene """
     # https://devtalk.blender.org/t/how-to-get-all-textures-in-2-80/5205
     textures = set()
+    print()
     for obj in bpy.data.objects:
-        print(obj)
+        print("object '{}':".format(obj.name))
         for mat_slot in obj.material_slots:
             for node in mat_slot.material.node_tree.nodes:
 
                 # TODO: figure out how to export materials...
-                print("{} node: {}".format(node.type, node))
-                print("{}".format(node.inputs))
-                print("{}".format(node.outputs))
+                # print("{} node: {}".format(node.type, node))
+                # print("{}".format(node.inputs))
+                # print("{}".format(node.outputs))
+                # print("{}".format(node.id_data))
 
                 # save textures
                 if node.type == 'TEX_IMAGE':
                     textures.add(node)
+                    print("  Texture '{}':".format(node.image.name))
+                    print_material_connections(node, indent=2)
+        print()
+
     if textures:
         texture_dir = os.path.join(export_dir, 'Textures')
         if not os.path.exists(texture_dir):
