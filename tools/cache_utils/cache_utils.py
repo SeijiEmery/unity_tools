@@ -1,5 +1,6 @@
 import os
 import yaml
+import sys
 
 
 class Cache:
@@ -53,7 +54,8 @@ class Cache:
 
 
 def cache(name):
+    exec_path = os.path.split(sys.argv[0])[0]
     if name not in Cache.caches:
-        path = os.path.join('.cache', '.' + name + '.cache')
+        path = os.path.join(exec_path, '..', '.cache', '.' + name + '.cache')
         Cache.caches[name] = Cache(path)
     return Cache.caches[name]
