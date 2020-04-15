@@ -192,79 +192,142 @@ class UnityFileRef:
         return "&{}:{:d}".format(self.guid, self.id)
 
 
-def dump_human_readable_unity_scene_repr(path, guid, objects):
-    def parse_file_ref(info):
-        ref_id = info['fileID']
-        ref_guid = info['guid'] if 'guid' in info else None
-        if 'type' not in info:
-            return UnityFileRef(ref_guid or guid, int(ref_id))
-        t = int(info['type'])
-        if t == 2:
-            return UnityFileRef(ref_guid, int(ref_id))
-        else:
-            return info
+class UnityType:
+    def __init__(self, name, typeid):
+        self.name = name
+        self.typeid = int(typeid)
 
-    def list_properties(obj, name=None):
-        if type(obj) == list:
-            for i, value in enumerate(obj):
-                for result in list_properties(value, '%s[%d]' % (name, i)):
+    def __cmp__(self, other):
+        if type(other) != UnityType:
+            return cmp(type(self), type(other))
+        return cmp((self.name, self.typeid), (other.name, other.typeid))
+
+    def __repr__(self):
+        return '{}!{:d}'.format(self.name, self.typeid)
+
+
+def fmt_prop(name, value):
+    if value is None:
+        return "{name}: null".format(name=name)
+    elif type(value) == UnityFileRef:
+        return "{name}: {value}".format(name=name, value=value)
+    return "{name}: {type} {value}".format(
+        name=name, value=value, type=type(value).__name__)
+
+
+def list_flat_properties(props):
+    def dump_props(props, name_prefix):
+        if type(props) == dict:
+            for k, v in props.items():
+                for result in dump_props(v, "{}.{}".format(name_prefix, k)):
                     yield result
-        elif type(obj) == str:
-            if re.match(r'-?\d+\.?\d*[eE]?\d*', obj):
-                if '.' in obj:
-                    yield name, float(obj)
-                else:
-                    yield name, int(obj)
-            else:
-                yield name, '"%s"' % obj
-        elif type(obj) != dict:
-            yield name, str(obj)
-        elif 'fileID' in obj:
-            yield name, parse_file_ref(obj)
-        else:
-            for k, v in obj.items():
-                if name is not None:
-                    results = list_properties(v, '%s.%s' % (name, k))
-                else:
-                    results = list_properties(v, k)
-                for result in results:
+        elif type(props) == list:
+            for i, v in enumerate(props):
+                for result in dump_props(v, "{}[{:d}]".format(name_prefix, i)):
                     yield result
+        else:
+            yield name_prefix, props
+    if type(props) != dict:
+        raise Exception(
+            "properties must be a dictionary, got {}!".format(type(props)))
+    for k, v in props.items():
+        for result in dump_props(v, k):
+            yield result
 
-    def fmt_prop(name, value):
-        if value is None:
-            return "{name}: null".format(name=name)
-        elif type(value) == UnityFileRef:
-            return "{name}: {value}".format(name=name, value=value)
-        return "{name}: {type} {value}".format(
-            name=name, value=value, type=type(value).__name__)
 
-    return "file &{guid}: {path}\n{objects}".format(
-        guid=guid, path=path, objects="\n".join([
-            "  {object_type}!{typeid} &{guid}:{fileid}\n{properties}".format(
-                object_type=info['type'],
-                typeid=info['typeid'],
-                guid=guid,
-                fileid=id,
-                properties="\n".join([
-                    "    {}".format(fmt_prop(name, value))
-                    for name, value in list_properties(info['data'])
-                ])
-            )
-            for id, info in objects.items()
-        ]))
+class UnitySceneGraphObject:
+    def __init__(self, asset, ref, object_type, properties):
+        self.asset = asset
+        self.ref = ref
+        self.type = object_type
+        self.properties = properties
+        self._flat_properties = None
+
+    @property
+    def flat_properties(self):
+        if self._flat_properties is None:
+            self._flat_properties = dict(list_flat_properties(self.properties))
+        return self._flat_properties
+
+    def __repr__(self):
+        return "{type} {ref} {path}\n{properties}".format(
+            type=self.type,
+            ref=self.ref,
+            path=self.asset.path if self.asset else '',
+            properties='\n'.join([
+                '  %s' % fmt_prop(name, value)
+                for name, value in self.flat_properties.items()
+            ])
+        )
 
 
 class UnityAssetSceneGraph(UnityAsset):
     def __init__(self, asset_type, path, *args, **kwargs):
         super(UnityAsset, self).__init__(asset_type, path, *args, **kwargs)
+        self.objects = None
 
     def load(self):
         self.file.__class__ = UnitySceneDataFile
         self.file.load()
-        self.data = self.file.data
+        guid = self.guid
+
+        def parse_file_ref(info):
+            ref_id = info['fileID']
+            ref_guid = info['guid'] if 'guid' in info else None
+            if 'type' not in info:
+                return UnityFileRef(ref_guid or guid, int(ref_id))
+            t = int(info['type'])
+            if t == 2:
+                return UnityFileRef(ref_guid, int(ref_id))
+            else:
+                return info
+
+        def parse_properties(data):
+            if type(data) == str:
+                if data.isnumeric():
+                    if '.' in data:
+                        return float(data)
+                    else:
+                        return int(data)
+                else:
+                    return data
+            elif type(data) == list:
+                return list(map(parse_properties, data))
+            elif type(data) == dict:
+                if 'fileID' in data:
+                    return parse_file_ref(data)
+                else:
+                    return {k: parse_properties(v) for k, v in data.items()}
+            else:
+                raise Exception(
+                    "Unhandled type {}: {}".format(type(data), data))
+
+        self.objects = {
+            int(ref_id): UnitySceneGraphObject(
+                asset=self,
+                ref=UnityFileRef(guid=guid, fileid=ref_id),
+                object_type=UnityType(name=obj['type'], typeid=obj['typeid']),
+                properties=parse_properties(obj['data'])
+            )
+            for ref_id, obj in self.file.data.items()
+        }
 
     def __repr__(self):
-        return dump_human_readable_unity_scene_repr(self.path, self.guid, self.data)
+        if self.objects:
+            objects = ''.join([
+                '\n  %s' % str(obj).replace('\n', '\n  ')
+                for obj in self.objects.values()
+            ])
+        else:
+            objects = ''
+        if not self.objects:
+            return "file &{guid}: {path}".format(
+                guid=self.guid,
+                path=self.path)
+        return "file &{guid}: {path}{objects}".format(
+            guid=self.guid,
+            path=self.path,
+            objects=objects)
 
 
 class UnityAssetPrefab(UnityAssetSceneGraph):
