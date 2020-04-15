@@ -151,79 +151,10 @@ def load_text(file):
     return error, data
 
 
-def read_yaml(data, loader=yaml.CBaseLoader):
-    try:
-        data = yaml.load(data, loader=loader)
-        return None, data
-    except yaml.YAMLError as e:
-        return e, data
 
 
-def find_unity_yaml_objects(content):
-    """ Locates all unity .yaml objects within a unity .yaml file.
-
-    Generates a list of tuples (object_type, object_id, yaml_content)
-    for each sub-document found in this file.
-
-    Uses regexes to locate sub-documents (and handle !u!<tag> &<id> syntax),
-    which is simpler than fully supporting unity's full tag spec +
-    serialization format.
-
-    Used to implement read_unity_yaml_objects(content)
-    """
-    regex = re.compile(r'---\s+!u!(\d+)\s+&(\d+)[^\n]+\n')
-    prev_match = None
-    while True:
-        match = re.search(regex, content)
-        if prev_match is not None:
-            object_type, object_id = prev_match.group(1, 2)
-            if match is not None:
-                yield object_type, object_id, content[:match.start()]
-            else:
-                yield object_type, object_id, content
-                return
-        elif match is None:
-            return
-        if match is not None:
-            content = content[match.end():]
-        prev_match = match
 
 
-def read_unity_yaml_objects(content):
-    """ Reads in / parses all objects from a unity .yaml file (as a string).
-
-    Returns a dictionary of objects with the following format:
-        guid: int => { type: str, typeid: int, data: dict }
-
-    Follows the non-throwing `return error, data`, where:
-        error: None (success), or an exception (parsing error / invalid format)
-        data:  the dictionary above (iff successful)
-
-    Implemented using find_unity_yaml_objects and the pyYAML library
-    (using C backend for speed); called by load_unity_yaml_objects(<filepath>)
-    """
-    objects = {}
-    for object_type, object_id, content in find_unity_yaml_objects(content):
-        error, data = read_yaml(content)
-        if error is not None:
-            return error, content
-        if type(data) != dict:
-            return Exception("Invalid object data format! %s: %s"
-                             % (type(data), data)), content
-        if len(data) != 1:
-            return Exception("Invalid object data (expected 1 object, got %d): %s"
-                             % (len(data), data)), content
-        for key, value in object_data:
-            object_name, object_data = key, value
-        if type(object_data) != dict:
-            return Exception("Invalid object data format (expected nested element to be dict, got %s): %s"
-                             % (type(object_data), object_data)), content
-        objects[object_id] = {
-            'type': object_name,
-            'typeid': object_type,
-            'data': object_data
-        }
-    return None, objects
 
 
 def load_unity_yaml_objects(file):
@@ -468,23 +399,7 @@ class FileSystem:
         ])
 
 
-class File:
-    def __init__(self, guid, path, name, file_type, data, metadata):
-        self.guid = guid
-        self.path = path
-        self.name = name
-        self.file_type = file_type
-        self.data = data
-        self.metadata = metadata
-        self.fs = None
 
-    def __cmp__(self, other):
-        return cmp(self.path, other.path)
-
-
-class Directory (File):
-    def __init__(self, guid, path, name, data, metadata):
-        super().__init__(guid, path, name, 'directory', data, metadata)
 
 
 class UnitySceneEntity:

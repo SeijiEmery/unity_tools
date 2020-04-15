@@ -1,4 +1,5 @@
 import os
+import re
 import yaml
 
 
@@ -63,6 +64,92 @@ class UnityMetaFile(UnityYamlFile):
         return self
 
 
+def find_unity_yaml_objects(content):
+    """ Locates all unity .yaml objects within a unity .yaml file.
+
+    Generates a list of tuples (object_type, object_id, yaml_content)
+    for each sub-document found in this file.
+
+    Uses regexes to locate sub-documents (and handle !u!<tag> &<id> syntax),
+    which is simpler than fully supporting unity's full tag spec +
+    serialization format.
+
+    Used to implement read_unity_yaml_objects(content)
+    """
+    regex = re.compile(r'---\s+!u!(\d+)\s+&(\d+)[^\n]+\n')
+    prev_match = None
+    while True:
+        match = re.search(regex, content)
+        if prev_match is not None:
+            object_type, object_id = prev_match.group(1, 2)
+            if match is not None:
+                yield object_type, object_id, content[:match.start()]
+            else:
+                yield object_type, object_id, content
+                return
+        elif match is None:
+            return
+        if match is not None:
+            content = content[match.end():]
+        prev_match = match
+
+
+def read_yaml(data, loader=yaml.CBaseLoader):
+    try:
+        data = yaml.load(data, Loader=loader)
+        return None, data
+    except yaml.YAMLError as e:
+        return e, data
+
+
+def read_unity_yaml_objects(content):
+    """ Reads in / parses all objects from a unity .yaml file (as a string).
+
+    Returns a dictionary of objects with the following format:
+        guid: int => { type: str, typeid: int, data: dict }
+
+    Follows the non-throwing `return error, data`, where:
+        error: None (success), or an exception (parsing error / invalid format)
+        data:  the dictionary above (iff successful)
+
+    Implemented using find_unity_yaml_objects and the pyYAML library
+    (using C backend for speed); called by load_unity_yaml_objects(<filepath>)
+    """
+    objects = {}
+    for object_type, object_id, content in find_unity_yaml_objects(content):
+        error, data = read_yaml(content)
+        if error is not None:
+            return error, content
+        if type(data) != dict:
+            return Exception("Invalid object data format! %s: %s"
+                             % (type(data), data)), content
+        if len(data) != 1:
+            return Exception("Invalid object data (expected 1 object, got %d): %s"
+                             % (len(data), data)), content
+        for key, value in data.items():
+            object_name, data = key, value
+        if type(data) != dict:
+            return Exception("Invalid object data format (expected nested element to be dict, got %s): %s"
+                             % (type(data), data)), content
+        objects[object_id] = {
+            'type': object_name,
+            'typeid': object_type,
+            'data': data
+        }
+    return None, objects
+
+
+class UnitySceneDataFile(UnityFile):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def load(self):
+        super().load()
+        if self.error is None:
+            self.error, self.data = read_unity_yaml_objects(self.data)
+        return self
+
+
 class UnityAsset:
     def __init__(self, asset_type, path, guid=None):
         self.asset_type = asset_type
@@ -86,6 +173,11 @@ class UnityDirectoryAsset(UnityAsset):
 class UnityAssetSceneGraph(UnityAsset):
     def __init__(self, asset_type, path, *args, **kwargs):
         super(UnityAsset, self).__init__(asset_type, path, *args, **kwargs)
+
+    def load(self):
+        self.file.__class__ = UnitySceneDataFile
+        self.file.load()
+        self.data = self.file.data
 
 
 class UnityAssetPrefab(UnityAssetSceneGraph):
@@ -280,7 +372,12 @@ if __name__ == '__main__':
     scanner = UnityFileSystemResponder(db)
     scanner.scan_all()
     assets = {asset for asset in db.assets_by_path.values() if asset.asset_type != UnityDirectoryAsset}
-    for asset in assets:
-        print("%s: %s" % (asset.guid, asset.path))
-    print("%d asset(s)" % len(assets))
+    # for asset in assets:
+    #     print("%s: %s" % (asset.guid, asset.path))
+    # print("%d asset(s)" % len(assets))
 
+    ASSET = "/Users/semery/projects/glitch-escape/Assets/GlitchEscape/Cutscenes/Cutscenes.prefab"
+    print(ASSET)
+    asset = db.assets_by_path[ASSET]
+    asset.load()
+    print(asset)
