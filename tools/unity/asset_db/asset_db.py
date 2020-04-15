@@ -170,6 +170,90 @@ class UnityDirectoryAsset(UnityAsset):
         super().__init__(UnityDirectoryAsset, path, *args, **kwargs)
 
 
+class UnityFileRef:
+    def __init__(self, guid, fileid):
+        self.id = int(fileid)
+        self.guid = guid if self.id != 0 else None
+
+    @property
+    def uuid(self):
+        return (self.guid, self.id)
+
+    @property
+    def empty(self):
+        return self.id == 0
+
+    def __cmp__(self, other):
+        return cmp(self.uuid, other.uuid)
+
+    def __repr__(self):
+        if self.empty:
+            return "null"
+        return "&{}:{:d}".format(self.guid, self.id)
+
+
+def dump_human_readable_unity_scene_repr(path, guid, objects):
+    def parse_file_ref(info):
+        ref_id = info['fileID']
+        ref_guid = info['guid'] if 'guid' in info else None
+        if 'type' not in info:
+            return UnityFileRef(ref_guid or guid, int(ref_id))
+        t = int(info['type'])
+        if t == 2:
+            return UnityFileRef(ref_guid, int(ref_id))
+        else:
+            return info
+
+    def list_properties(obj, name=None):
+        if type(obj) == list:
+            for i, value in enumerate(obj):
+                for result in list_properties(value, '%s[%d]' % (name, i)):
+                    yield result
+        elif type(obj) == str:
+            if re.match(r'-?\d+\.?\d*[eE]?\d*', obj):
+                if '.' in obj:
+                    yield name, float(obj)
+                else:
+                    yield name, int(obj)
+            else:
+                yield name, '"%s"' % obj
+        elif type(obj) != dict:
+            yield name, str(obj)
+        elif 'fileID' in obj:
+            yield name, parse_file_ref(obj)
+        else:
+            for k, v in obj.items():
+                if name is not None:
+                    results = list_properties(v, '%s.%s' % (name, k))
+                else:
+                    results = list_properties(v, k)
+                for result in results:
+                    yield result
+
+    def fmt_prop(name, value):
+        if value is None:
+            return "{name}: null".format(name=name)
+        elif type(value) == UnityFileRef:
+            return "{name}: {value}".format(name=name, value=value)
+        return "{name}: {type} {value}".format(
+            name=name, value=value, type=type(value).__name__)
+
+    return "file &{guid}: {path}\n{objects}".format(
+        guid=guid, path=path, objects="\n".join([
+            "  {object_type}!{typeid} &{guid}:{fileid}\n{properties}".format(
+                object_type=info['type'],
+                typeid=info['typeid'],
+                guid=guid,
+                fileid=id,
+                properties="\n".join([
+                    "    {}".format(fmt_prop(name, value))
+                    for name, value in list_properties(info['data'])
+                ])
+            )
+            for id, info in objects.items()
+        ]))
+
+
 class UnityAssetSceneGraph(UnityAsset):
     def __init__(self, asset_type, path, *args, **kwargs):
         super(UnityAsset, self).__init__(asset_type, path, *args, **kwargs)
@@ -179,20 +263,26 @@ class UnityAssetSceneGraph(UnityAsset):
         self.file.load()
         self.data = self.file.data
 
+    def __repr__(self):
+        return dump_human_readable_unity_scene_repr(self.path, self.guid, self.data)
+
 
 class UnityAssetPrefab(UnityAssetSceneGraph):
     def __init__(self, path, *args, **kwargs):
-        super(UnityAssetSceneGraph, self).__init__(UnityAssetPrefab, path, *args, **kwargs)
+        super(UnityAssetSceneGraph, self).__init__(
+            UnityAssetPrefab, path, *args, **kwargs)
 
 
 class UnityAssetScene(UnityAssetSceneGraph):
     def __init__(self, path, *args, **kwargs):
-        super(UnityAssetSceneGraph, self).__init__(UnityAssetScene, path, *args, **kwargs)
+        super(UnityAssetSceneGraph, self).__init__(
+            UnityAssetScene, path, *args, **kwargs)
 
 
 class UnityAssetMaterial(UnityAssetSceneGraph):
     def __init__(self, path, *args, **kwargs):
-        super(UnityAssetSceneGraph, self).__init__(UnityAssetMaterial, path, *args, **kwargs)
+        super(UnityAssetSceneGraph, self).__init__(
+            UnityAssetMaterial, path, *args, **kwargs)
 
 
 class UnityAssetCSharpScript(UnityAsset):
@@ -309,7 +399,8 @@ class UnityFileSystemResponder:
 
         # ignore files we don't care about
         if ext not in UNITY_ASSET_EXTS:
-            print("skipping %s with ext '%s' (not in %s)" % (path, ext, UNITY_ASSET_EXTS))
+            print("skipping %s with ext '%s' (not in %s)" %
+                  (path, ext, UNITY_ASSET_EXTS))
             return
 
         # skip files that we're alread tracking
@@ -367,11 +458,13 @@ if __name__ == '__main__':
             print("removed asset: '%s'" % asset.path)
 
     import sys
-    root_dir = sys.argv[1] if len(sys.argv) > 1 else '/Users/semery/projects/glitch-escape/Assets/'
+    root_dir = sys.argv[1] if len(
+        sys.argv) > 1 else '/Users/semery/projects/glitch-escape/Assets/'
     db = UnityAssetDB(root_dir, logger=Logger())
     scanner = UnityFileSystemResponder(db)
     scanner.scan_all()
-    assets = {asset for asset in db.assets_by_path.values() if asset.asset_type != UnityDirectoryAsset}
+    assets = {asset for asset in db.assets_by_path.values(
+    ) if asset.asset_type != UnityDirectoryAsset}
     # for asset in assets:
     #     print("%s: %s" % (asset.guid, asset.path))
     # print("%d asset(s)" % len(assets))
