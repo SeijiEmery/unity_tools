@@ -151,7 +151,7 @@ class UnitySceneDataFile(UnityFile):
 
 
 class UnityAsset:
-    def __init__(self, asset_type, path, guid=None):
+    def __init__(self, asset_type, path, loadable=False, guid=None):
         self.asset_type = asset_type
         self.path = path
         self.meta_path = path + '.meta'
@@ -159,10 +159,32 @@ class UnityAsset:
         self.metafile = UnityMetaFile(self.meta_path, asset=self)
         self.guid = guid or self.metafile.guid
         self.db = None
+        self.loadable=loadable
 
     def load_metafile(self):
         self.metafile.load()
         self.guid = self.metafile.guid
+
+    def __repr__(self):
+        return ("{asset_type} {guid} needs load? {needs_load} loaded? {loaded}" +
+                "\n  file {file_path} exists? {file_exists}" +
+                "\n  meta {metafile_path} exists? {metafile_exists}"
+                ).format(
+                    asset_type=type(self).__name__,
+                    guid=self.guid,
+                    needs_load=self.loadable,
+                    loaded=(self.is_loaded 
+                            if self.loadable
+                            else True),
+                    file_path=self.file.path,
+                    file_exists=self.file.exists,
+                    metafile_path=self.metafile.path,
+                    metafile_exists=self.metafile.exists)
+
+
+class IgnoredAsset(UnityAsset):
+    def __init__(self, path, *args, **kwargs):
+        super().__init__(IgnoredAsset, path, *args, **kwargs)
 
 
 class UnityDirectoryAsset(UnityAsset):
@@ -174,6 +196,8 @@ class UnityFileRef:
     def __init__(self, guid, fileid):
         self.id = int(fileid)
         self.guid = guid if self.id != 0 else None
+        if self.guid is not None and type(self.guid) != int:
+            self.guid = int(self.guid, base=16)
 
     @property
     def uuid(self):
@@ -189,7 +213,22 @@ class UnityFileRef:
     def __repr__(self):
         if self.empty:
             return "null"
-        return "&{}:{:d}".format(self.guid, self.id)
+        return "&{:x}:{:d}".format(self.guid, self.id)
+
+    @staticmethod
+    def parse_from(data, parent_guid=None):
+        if parent_guid and type(parent_guid) != int:
+            parent_guid = int(parent_guid, base=16)
+
+        ref_id = data['fileID']
+        ref_guid = data['guid'] if 'guid' in data else None
+        if 'type' in data and int(data['type']) == 0:
+            if ref_guid not in ('0000000000000000e000000000000000', '0000000000000000f000000000000000'):
+                raise Exception(str(data))
+            ref_guid = None
+        elif 'type' in data and int(data['type']) not in (2, 3):
+            raise Exception(str(data))
+        return UnityFileRef(ref_guid or parent_guid, ref_id)
 
 
 class UnityType:
@@ -263,24 +302,18 @@ class UnitySceneGraphObject:
 
 class UnityAssetSceneGraph(UnityAsset):
     def __init__(self, asset_type, path, *args, **kwargs):
-        super(UnityAsset, self).__init__(asset_type, path, *args, **kwargs)
         self.objects = None
+        super().__init__(
+            asset_type, path, loadable=True, *args, **kwargs)
+
+    @property
+    def is_loaded(self):
+        return self.objects is not None
 
     def load(self):
         self.file.__class__ = UnitySceneDataFile
         self.file.load()
         guid = self.guid
-
-        def parse_file_ref(info):
-            ref_id = info['fileID']
-            ref_guid = info['guid'] if 'guid' in info else None
-            if 'type' not in info:
-                return UnityFileRef(ref_guid or guid, int(ref_id))
-            t = int(info['type'])
-            if t == 2:
-                return UnityFileRef(ref_guid, int(ref_id))
-            else:
-                return info
 
         def parse_properties(data):
             if type(data) == str:
@@ -295,7 +328,7 @@ class UnityAssetSceneGraph(UnityAsset):
                 return list(map(parse_properties, data))
             elif type(data) == dict:
                 if 'fileID' in data:
-                    return parse_file_ref(data)
+                    return UnityFileRef.parse_from(data, guid)
                 else:
                     return {k: parse_properties(v) for k, v in data.items()}
             else:
@@ -320,31 +353,24 @@ class UnityAssetSceneGraph(UnityAsset):
             ])
         else:
             objects = ''
-        if not self.objects:
-            return "file &{guid}: {path}".format(
-                guid=self.guid,
-                path=self.path)
-        return "file &{guid}: {path}{objects}".format(
-            guid=self.guid,
-            path=self.path,
-            objects=objects)
+        return super().__repr__() + objects
 
 
 class UnityAssetPrefab(UnityAssetSceneGraph):
     def __init__(self, path, *args, **kwargs):
-        super(UnityAssetSceneGraph, self).__init__(
+        super().__init__(
             UnityAssetPrefab, path, *args, **kwargs)
 
 
 class UnityAssetScene(UnityAssetSceneGraph):
     def __init__(self, path, *args, **kwargs):
-        super(UnityAssetSceneGraph, self).__init__(
+        super().__init__(
             UnityAssetScene, path, *args, **kwargs)
 
 
 class UnityAssetMaterial(UnityAssetSceneGraph):
     def __init__(self, path, *args, **kwargs):
-        super(UnityAssetSceneGraph, self).__init__(
+        super().__init__(
             UnityAssetMaterial, path, *args, **kwargs)
 
 
@@ -353,12 +379,23 @@ class UnityAssetCSharpScript(UnityAsset):
         super().__init__(UnityAssetCSharpScript, path, *args, **kwargs)
 
 
+IGNORED_UNITY_ASSET_TYPES = {
+    '.txt', '.pdf', '.cginc', '.glsl', '.glslinc', '.asset', '.chm', '.md', '',
+    '.png', '.json', '.inputactions', '.shader', '.wav', '.mp3', '.ogg',
+    '.hlsl', '.shadergraph', '.shadersubgraph', '.blend', '.fbx',
+    '.tif', '.jpg', '.ttf', '.tga', '.jpeg', '.mtl', '.lighting', '.physicMaterial',
+    '.controller', '.anim', '.cache', '.playable',
+}
+IGNORED_EXTS = {'.DS_Store', '.gitkeep', '.blend1', '.orig'}
 UNITY_ASSET_EXT_TYPES = {
     '.prefab': UnityAssetPrefab,
     '.unity': UnityAssetScene,
     '.mat': UnityAssetMaterial,
     '.cs': UnityAssetCSharpScript,
 }
+UNITY_ASSET_EXT_TYPES.update({
+    t: IgnoredAsset for t in IGNORED_UNITY_ASSET_TYPES
+})
 UNITY_ASSET_EXTS = \
     {k for k in UNITY_ASSET_EXT_TYPES.keys()} | \
     {'%s.meta' % k for k in UNITY_ASSET_EXT_TYPES.keys()} | \
@@ -419,30 +456,73 @@ class UnityAssetDB:
     def has_matching_file(self, path):
         return path in self.files
 
+    def run_asset_update_parallel(self, job, assets_or_predicate):
+        if type(assets_or_predicate) == list:
+            assets = assets_or_predicate
+        else:
+            predicate = assets_or_predicate
+            assets = [
+                asset for asset in self.assets_by_path.values()
+                if predicate(asset)
+            ]
+        print("Running {} on {} asset(s):\n{}".format(
+            job, len(assets), '\n'.join([asset.path for asset in assets])))
+        import time
+        start_time = time.time()
+        for asset in run_parallel(job, assets):
+            self.update_asset(asset)
+        stop_time = time.time()
+        print("finished running {} on {} asset(s) in {:0.2f} second(s)".format(
+            job, len(assets), stop_time - start_time))
+        print()
+
     def load_missing_metafiles(self):
-        assets_missing_metafiles = [
-            (path, asset) for path, asset in self.assets_by_path.items()
-            if not asset.metafile.is_loaded
-        ]
+        self.run_asset_update_parallel(
+            parallel_job_load_metafile,
+            lambda asset: not asset.metafile.is_loaded)
+
+    def load_all(self):
+        self.run_asset_update_parallel(
+            parallel_job_load_asset,
+            lambda asset: asset.loadable and not asset.is_loaded)
+
+
+pool = None
+
+
+def run_parallel(fcn, jobs):
+    global pool
+    if not pool:
         import multiprocessing as mp
         pool = mp.Pool(16)
-        results = pool.map(load_metafile, assets_missing_metafiles)
-        for path, asset in results:
-            self.update_asset(asset)
+    return pool.map(fcn, jobs)
 
 
-def load_metafile(args):
-    path, asset = args
+def parallel_job_load_metafile(args):
+    asset = args
     asset.load_metafile()
-    return path, asset
+    return asset
+
+
+def parallel_job_load_asset(asset):
+    asset.load()
+    return asset
 
 
 def split_file_path_name_ext(path):
     base_path, file_name = os.path.split(path)
     ext_parts = file_name.split('.')
     if len(ext_parts) > 1:
-        return base_path, ext_parts[0], '.' + '.'.join(ext_parts[1:])
-    return base_path, ext_parts[0], ''
+        if ext_parts[-1] == 'meta' and ext_parts[-2] in UNITY_ASSET_EXT_TYPES:
+            name = '.'.join(ext_parts[:-2])
+            ext = '.' + '.'.join(ext_parts[-2:])
+        else:
+            name = '.'.join(ext_parts[:-1])
+            ext = '.' + ext_parts[-1]
+    else:
+        name = ext_parts[0]
+        ext = ''
+    return base_path, name, ext
 
 
 class EmptyTransactionLogger:
@@ -458,9 +538,11 @@ class UnityFileSystemResponder:
     def add_file(self, path):
         original_path = path
         base_path, file, ext = split_file_path_name_ext(path)
-        print("'%s' '%s' '%s'" % (base_path, file, ext))
 
         # ignore files we don't care about
+        if ext in IGNORED_EXTS:
+            return
+
         if ext not in UNITY_ASSET_EXTS:
             print("skipping %s with ext '%s' (not in %s)" %
                   (path, ext, UNITY_ASSET_EXTS))
@@ -500,6 +582,7 @@ class UnityFileSystemResponder:
             for dir in dirs:
                 self.add_dir(os.path.join(path, dir))
         self.db.load_missing_metafiles()
+        self.db.load_all()
 
 
 if __name__ == '__main__':
@@ -528,12 +611,14 @@ if __name__ == '__main__':
     scanner.scan_all()
     assets = {asset for asset in db.assets_by_path.values(
     ) if asset.asset_type != UnityDirectoryAsset}
-    # for asset in assets:
-    #     print("%s: %s" % (asset.guid, asset.path))
-    # print("%d asset(s)" % len(assets))
+    for asset in assets:
+        if asset.loadable:
+            print(asset)
+        # print("%s: %s" % (asset.guid, asset.path))
+    print("%d asset(s)" % len(assets))
 
-    ASSET = "/Users/semery/projects/glitch-escape/Assets/GlitchEscape/Cutscenes/Cutscenes.prefab"
-    print(ASSET)
-    asset = db.assets_by_path[ASSET]
-    asset.load()
-    print(asset)
+    # ASSET = "/Users/semery/projects/glitch-escape/Assets/GlitchEscape/Cutscenes/Cutscenes.prefab"
+    # print(ASSET)
+    # asset = db.assets_by_path[ASSET]
+    # asset.load()
+    # print(asset)
