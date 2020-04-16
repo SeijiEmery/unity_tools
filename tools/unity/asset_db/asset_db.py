@@ -76,7 +76,7 @@ def find_unity_yaml_objects(content):
 
     Used to implement read_unity_yaml_objects(content)
     """
-    regex = re.compile(r'---\s+!u!(\d+)\s+&(\d+)[^\n]+\n')
+    regex = re.compile(r'---\s+!u!(\d+)\s+&(\d+)[^\n]*\n')
     prev_match = None
     while True:
         match = re.search(regex, content)
@@ -159,7 +159,7 @@ class UnityAsset:
         self.metafile = UnityMetaFile(self.meta_path, asset=self)
         self.guid = guid or self.metafile.guid
         self.db = None
-        self.loadable=loadable
+        self.loadable = loadable
 
     def load_metafile(self):
         self.metafile.load()
@@ -173,13 +173,16 @@ class UnityAsset:
                     asset_type=type(self).__name__,
                     guid=self.guid,
                     needs_load=self.loadable,
-                    loaded=(self.is_loaded 
+                    loaded=(self.is_loaded
                             if self.loadable
                             else True),
                     file_path=self.file.path,
                     file_exists=self.file.exists,
                     metafile_path=self.metafile.path,
                     metafile_exists=self.metafile.exists)
+
+    def find_object_by_id(self, id):
+        return None
 
 
 class IgnoredAsset(UnityAsset):
@@ -193,7 +196,9 @@ class UnityDirectoryAsset(UnityAsset):
 
 
 class UnityFileRef:
-    def __init__(self, guid, fileid):
+    def __init__(self, db, asset, guid, fileid):
+        self.db = db
+        self.asset = asset
         self.id = int(fileid)
         self.guid = guid if self.id != 0 else None
         if self.guid is not None and type(self.guid) != int:
@@ -211,24 +216,56 @@ class UnityFileRef:
         return cmp(self.uuid, other.uuid)
 
     def __repr__(self):
+        return self.print_relative_to(self.asset)
+
+    def print_relative_to(self, parent_asset=None):
         if self.empty:
             return "null"
-        return "&{:x}:{:d}".format(self.guid, self.id)
+
+        if parent_asset and self.guid == parent_asset.guid:
+            obj = parent_asset.find_object_by_id(self.id)
+            if obj is None:
+                return "missing internal reference to object {id:d} (&{guid:x}:{id:d})".format(
+                    guid=self.guid, id=self.id)
+
+            return "{type} &:{id:d}".format(
+                type=obj.type.name, id=self.id)
+        else:
+            asset = self.db.find_asset_by_guid(self.guid)
+            if asset is None:
+                return "missing reference to asset {guid:x} (&{guid:x}:{id:d})".format(
+                    guid=self.guid, id=self.id)
+
+            path = os.path.relpath(asset.path, self.asset.path) \
+                if self.asset is not None else asset.path
+
+            obj = asset.find_object_by_id(self.id)
+            if obj is None:
+                return "missing reference to object {id:d} in {type} {path} (&{guid:x}:{id:d})".format(
+                    type=asset.asset_type.__name__, path=path,
+                    guid=self.guid, id=self.id)
+
+            return "{type} {id:d} in {path} (&{guid:x}:{id:d})".format(
+                type=obj.type.name, asset_type=asset.asset_type, path=path,
+                guid=self.guid, id=self.id)
 
     @staticmethod
-    def parse_from(data, parent_guid=None):
+    def parse_from(db, data, asset=None, parent_guid=None):
         if parent_guid and type(parent_guid) != int:
             parent_guid = int(parent_guid, base=16)
 
         ref_id = data['fileID']
         ref_guid = data['guid'] if 'guid' in data else None
         if 'type' in data and int(data['type']) == 0:
-            if ref_guid not in ('0000000000000000e000000000000000', '0000000000000000f000000000000000'):
+            if ref_guid not in (
+                    '0000000000000000e000000000000000',
+                    '0000000000000000f000000000000000'):
                 raise Exception(str(data))
             ref_guid = None
         elif 'type' in data and int(data['type']) not in (2, 3):
             raise Exception(str(data))
-        return UnityFileRef(ref_guid or parent_guid, ref_id)
+        return UnityFileRef(
+            db=db, asset=asset, guid=(ref_guid or parent_guid), fileid=ref_id)
 
 
 class UnityType:
@@ -250,6 +287,14 @@ def fmt_prop(name, value):
         return "{name}: null".format(name=name)
     elif type(value) == UnityFileRef:
         return "{name}: {value}".format(name=name, value=value)
+    elif type(value) == str:
+        if '\n' not in value:
+            return '{name}: {type} "{value}"'.format(
+                name=name, type='str', value=value)
+        else:
+            return '{name}: {type} """\n    {value}\n    """'.format(
+                name=name, type='str', value=value.strip().replace('\n', '\n    '))
+
     return "{name}: {type} {value}".format(
         name=name, value=value, type=type(value).__name__)
 
@@ -289,9 +334,9 @@ class UnitySceneGraphObject:
         return self._flat_properties
 
     def __repr__(self):
-        return "{type} {ref} {path}\n{properties}".format(
+        return "{type} {id} {path}\n{properties}".format(
             type=self.type,
-            ref=self.ref,
+            id=self.ref.id,
             path=self.asset.path if self.asset else '',
             properties='\n'.join([
                 '  %s' % fmt_prop(name, value)
@@ -306,6 +351,22 @@ class UnityAssetSceneGraph(UnityAsset):
         super().__init__(
             asset_type, path, loadable=True, *args, **kwargs)
 
+    def find_object_by_id(self, object_id):
+        if self.objects is None:
+            self.load()
+            self.db.update_asset(self)
+        if str(object_id) in self.objects:
+            return self.objects[str(object_id)]
+        if int(object_id) in self.objects:
+            return self.objects[int(object_id)]
+        # if self.objects:
+        #     print("Could not locate '%s' in '%s' (keys: %s)" % (
+        #         object_id, self.path, self.objects.keys()))
+        # else:
+        #     print("Could not locate '%s': '%s' is not yet loaded!" % (
+        #         object_id, self.path))
+        return None
+
     @property
     def is_loaded(self):
         return self.objects is not None
@@ -313,11 +374,11 @@ class UnityAssetSceneGraph(UnityAsset):
     def load(self):
         self.file.__class__ = UnitySceneDataFile
         self.file.load()
-        guid = self.guid
+        db, guid = self.db, self.guid
 
         def parse_properties(data):
             if type(data) == str:
-                if data.isnumeric():
+                if re.match(r'\-?[0-9]+\.?[0-9]*[eE]?-?[0-9]*$', data):
                     if '.' in data:
                         return float(data)
                     else:
@@ -328,22 +389,24 @@ class UnityAssetSceneGraph(UnityAsset):
                 return list(map(parse_properties, data))
             elif type(data) == dict:
                 if 'fileID' in data:
-                    return UnityFileRef.parse_from(data, guid)
+                    return UnityFileRef.parse_from(
+                        db=db, asset=self, data=data, parent_guid=guid)
                 else:
                     return {k: parse_properties(v) for k, v in data.items()}
             else:
                 raise Exception(
                     "Unhandled type {}: {}".format(type(data), data))
 
-        self.objects = {
-            int(ref_id): UnitySceneGraphObject(
+        objects = [
+            UnitySceneGraphObject(
                 asset=self,
-                ref=UnityFileRef(guid=guid, fileid=ref_id),
+                ref=UnityFileRef(db=db, asset=self, guid=guid, fileid=ref_id),
                 object_type=UnityType(name=obj['type'], typeid=obj['typeid']),
                 properties=parse_properties(obj['data'])
             )
             for ref_id, obj in self.file.data.items()
-        }
+        ]
+        self.objects = {obj.ref.id: obj for obj in objects}
 
     def __repr__(self):
         if self.objects:
@@ -413,6 +476,17 @@ class UnityAssetDB:
         self.removed_assets = {}
         self.transaction_log = []
         self.logger = logger
+
+    def find_asset_by_guid(self, guid):
+        if type(guid) != str:
+            guid = "{:x}".format(guid)
+        if guid in self.assets_by_guid:
+            return self.assets_by_guid[guid]
+        # print("Could not locate '%s' in assets!" % (
+        #     guid,
+        # ))
+
+        return None
 
     def add_file(self, file):
         """ Inserts a tracked file into the db """
@@ -614,7 +688,6 @@ if __name__ == '__main__':
     for asset in assets:
         if asset.loadable:
             print(asset)
-        # print("%s: %s" % (asset.guid, asset.path))
     print("%d asset(s)" % len(assets))
 
     # ASSET = "/Users/semery/projects/glitch-escape/Assets/GlitchEscape/Cutscenes/Cutscenes.prefab"
