@@ -493,13 +493,25 @@ class UnityAssetCSharpScript(UnityAsset):
         super().__init__(UnityAssetCSharpScript, path, *args, **kwargs)
 
 
+class UnityAssetTexture(UnityAsset):
+    def __init__(self, path, *args, **kwargs):
+        super().__init__(UnityAssetTexture, path, *args, **kwargs)
+
+    def find_object_by_id(self, id):
+        if int(id) == 2800000:
+            return self
+        return None
+
+
 IGNORED_UNITY_ASSET_TYPES = {
     '.txt', '.pdf', '.cginc', '.glsl', '.glslinc', '.asset', '.chm', '.md', '',
-    '.png', '.json', '.inputactions', '.shader', '.wav', '.mp3', '.ogg',
+    '.json', '.inputactions', '.shader', '.wav', '.mp3', '.ogg',
     '.hlsl', '.shadergraph', '.shadersubgraph', '.blend', '.fbx',
-    '.tif', '.jpg', '.ttf', '.tga', '.jpeg', '.mtl', '.lighting', '.physicMaterial',
+    '.ttf', '.mtl', '.lighting', '.physicMaterial',
     '.controller', '.anim', '.cache', '.playable',
 }
+
+TEXTURE_2D_EXTS = {'.jpg', '.jpeg', '.png', '.psd', '.tga', '.tif'}
 IGNORED_EXTS = {'.DS_Store', '.gitkeep', '.blend1', '.orig'}
 UNITY_ASSET_EXT_TYPES = {
     '.prefab': UnityAssetPrefab,
@@ -510,6 +522,11 @@ UNITY_ASSET_EXT_TYPES = {
 UNITY_ASSET_EXT_TYPES.update({
     t: IgnoredAsset for t in IGNORED_UNITY_ASSET_TYPES
 })
+UNITY_ASSET_EXT_TYPES.update({
+    t: UnityAssetTexture for t in TEXTURE_2D_EXTS
+})
+
+
 UNITY_ASSET_EXTS = \
     {k for k in UNITY_ASSET_EXT_TYPES.keys()} | \
     {'%s.meta' % k for k in UNITY_ASSET_EXT_TYPES.keys()} | \
@@ -674,17 +691,14 @@ def parallel_job_load_asset(asset):
 
 def split_file_path_name_ext(path):
     base_path, file_name = os.path.split(path)
-    ext_parts = file_name.split('.')
-    if len(ext_parts) > 1:
-        if ext_parts[-1] == 'meta' and ext_parts[-2] in UNITY_ASSET_EXT_TYPES:
-            name = '.'.join(ext_parts[:-2])
-            ext = '.' + '.'.join(ext_parts[-2:])
-        else:
-            name = '.'.join(ext_parts[:-1])
-            ext = '.' + ext_parts[-1]
+    file_name = file_name.rstrip('. \t')
+    if file_name.endswith('.meta'):
+        ext_parts = file_name[:-5].split('.')
+        ext = '.'+ext_parts[-1] + '.meta' if len(ext_parts) > 1 else '.meta'
     else:
-        name = ext_parts[0]
-        ext = ''
+        ext_parts = file_name.split('.')
+        ext = '.'+ext_parts[-1]
+    name = file_name[:-len(ext)]
     return base_path, name, ext
 
 
@@ -729,6 +743,7 @@ class UnityFileSystemResponder:
             #     ext, path, original_path, UNITY_ASSET_EXT_TYPES))
 
         # scan asset + add to db
+        print("adding %s (ext '%s') as %s" % (path, ext, UNITY_ASSET_EXT_TYPES[ext]))
         self.db.add_asset(UNITY_ASSET_EXT_TYPES[ext](path))
 
     def add_dir(self, path):
@@ -777,8 +792,7 @@ if __name__ == '__main__':
     # for asset in assets:
     #     if asset.loadable:
     #         print(asset)
-    print("%d asset(s)" % len(assets))
-
+    # print("%d asset(s)" % len(assets))
     db.summarize_missing_refs()
 
 
