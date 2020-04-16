@@ -503,15 +503,6 @@ class UnityAssetTexture(UnityAsset):
         return None
 
 
-IGNORED_UNITY_ASSET_TYPES = {
-    '.txt', '.pdf', '.cginc', '.glsl', '.glslinc', '.asset', '.chm', '.md', '',
-    '.json', '.inputactions', '.shader', '.wav', '.mp3', '.ogg',
-    '.hlsl', '.shadergraph', '.shadersubgraph', '.blend', '.fbx',
-    '.ttf', '.mtl', '.lighting', '.physicMaterial',
-    '.controller', '.anim', '.cache', '.playable',
-}
-
-TEXTURE_2D_EXTS = {'.jpg', '.jpeg', '.png', '.psd', '.tga', '.tif'}
 IGNORED_EXTS = {'.DS_Store', '.gitkeep', '.blend1', '.orig'}
 UNITY_ASSET_EXT_TYPES = {
     '.prefab': UnityAssetPrefab,
@@ -519,12 +510,32 @@ UNITY_ASSET_EXT_TYPES = {
     '.mat': UnityAssetMaterial,
     '.cs': UnityAssetCSharpScript,
 }
-UNITY_ASSET_EXT_TYPES.update({
-    t: IgnoredAsset for t in IGNORED_UNITY_ASSET_TYPES
-})
-UNITY_ASSET_EXT_TYPES.update({
-    t: UnityAssetTexture for t in TEXTURE_2D_EXTS
-})
+
+
+def add_exts(ext_types, type, exts):
+    ext_types.update({ext: type for ext in exts})
+
+
+add_exts(UNITY_ASSET_EXT_TYPES, IgnoredAsset, (
+    '.txt', '.pdf', '.cginc', '.glsl', '.glslinc', '.asset', '.chm', '.md', '',
+    '.json', '.inputactions', '.shader', '.wav', '.mp3', '.ogg',
+    '.hlsl', '.shadergraph', '.shadersubgraph', '.blend', '.fbx',
+    '.ttf', '.mtl', '.lighting', '.physicMaterial',
+    '.controller', '.anim', '.cache', '.playable',
+))
+add_exts(UNITY_ASSET_EXT_TYPES, UnityAssetTexture, (
+    '.jpg', '.jpeg', '.png', '.psd', '.tga', '.tif'
+))
+add_exts(UNITY_ASSET_EXT_TYPES, IgnoredAsset, (
+    '.blend', '.blend1'
+))
+add_exts(UNITY_ASSET_EXT_TYPES, IgnoredAsset, (
+    '.fbx'
+))
+
+
+
+
 
 
 UNITY_ASSET_EXTS = \
@@ -646,25 +657,49 @@ class UnityAssetDB:
 
     def summarize_missing_refs(self):
         assets = list(self.assets_by_path.values())
-        assets_missing_refs_count = 0
-        missing_ref_total = 0
-        for asset in assets:
-            if not asset.loadable:
-                continue
-            missing_refs = asset.get_missing_refs()
-            if len(missing_refs) > 0:
-                assets_missing_refs_count += 1
-                print("%s has %s missing ref(s):" % (
-                    asset.path, len(missing_refs)))
-                for ref in missing_refs:
-                    missing_ref_total += 1
-                    print("  {type} {id} {name}: {ref}".format(
-                        type=ref.object.type,
-                        id=ref.object.ref.id,
-                        name=ref.name,
-                        ref=ref.ref))
-        print("%d / %d asset(s) are missing a total of %d references" % (
-            assets_missing_refs_count, len(assets), missing_ref_total))
+        all_missing_refs = self.get_all_missing_refs()
+        missing_assets = set()
+        missing_asset_refs_by = dict()
+        missing_object_refs = dict()
+        for missing_ref in all_missing_refs:
+            guid = missing_ref.ref.guid
+            if guid not in self.assets_by_guid:
+                missing_assets.add(guid)
+                if guid not in missing_asset_refs_by:
+                    missing_asset_refs_by[guid] = set()
+                missing_asset_refs_by[guid].add((
+                    missing_ref.object.asset.path,
+                    missing_ref.object.type.name,
+                    missing_ref.object.ref.id
+                ))
+            else:
+                asset_path = missing_ref.object.asset.path
+                if asset_path not in missing_object_refs:
+                    missing_object_refs[asset_path] = list()
+                missing_object_refs[asset_path].append(missing_ref)
+
+        print("%d missing asset(s):" % len(missing_assets))
+        for missing_asset_guid in missing_assets:
+            print("missing asset %s referenced by %d object(s):\n\t%s" % (
+                missing_asset_guid, len(
+                    missing_asset_refs_by[missing_asset_guid]),
+                '\n\t'.join([
+                    '%s %s %s' % item for item in missing_asset_refs_by[missing_asset_guid]
+                ])
+            ))
+
+        print("%d asset(s) missing refs:" % len(missing_object_refs))
+        for path, missing_refs in missing_object_refs.items():
+            print("  %s missing %d ref(s):" % (path, len(missing_refs)))
+            for ref in missing_refs:
+                missing_ref_total += 1
+                print("  {type} {id} {name}: {ref}".format(
+                    type=ref.object.type,
+                    id=ref.object.ref.id,
+                    name=ref.name,
+                    ref=ref.ref))
+        # print("%d / %d asset(s) are missing a total of %d references" % (
+        #     assets_missing_refs_count, len(assets), missing_ref_total))
 
 
 pool = None
@@ -694,10 +729,10 @@ def split_file_path_name_ext(path):
     file_name = file_name.rstrip('. \t')
     if file_name.endswith('.meta'):
         ext_parts = file_name[:-5].split('.')
-        ext = '.'+ext_parts[-1] + '.meta' if len(ext_parts) > 1 else '.meta'
+        ext = '.' + ext_parts[-1] + '.meta' if len(ext_parts) > 1 else '.meta'
     else:
         ext_parts = file_name.split('.')
-        ext = '.'+ext_parts[-1]
+        ext = '.' + ext_parts[-1]
     name = file_name[:-len(ext)]
     return base_path, name, ext
 
@@ -743,7 +778,8 @@ class UnityFileSystemResponder:
             #     ext, path, original_path, UNITY_ASSET_EXT_TYPES))
 
         # scan asset + add to db
-        print("adding %s (ext '%s') as %s" % (path, ext, UNITY_ASSET_EXT_TYPES[ext]))
+        print("adding %s (ext '%s') as %s" %
+              (path, ext, UNITY_ASSET_EXT_TYPES[ext]))
         self.db.add_asset(UNITY_ASSET_EXT_TYPES[ext](path))
 
     def add_dir(self, path):
@@ -794,8 +830,6 @@ if __name__ == '__main__':
     #         print(asset)
     # print("%d asset(s)" % len(assets))
     db.summarize_missing_refs()
-
-
 
     # ASSET = "/Users/semery/projects/glitch-escape/Assets/GlitchEscape/Cutscenes/Cutscenes.prefab"
     # print(ASSET)
