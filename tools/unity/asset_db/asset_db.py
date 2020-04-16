@@ -205,6 +205,18 @@ class UnityFileRef:
             self.guid = int(self.guid, base=16)
 
     @property
+    def is_missing(self):
+        if self.empty:
+            return False
+        asset = self.db.find_asset_by_guid(self.guid)
+        if not asset:
+            return True
+        obj = asset.find_object_by_id(self.id)
+        if not obj:
+            return True
+        return False
+
+    @property
     def uuid(self):
         return (self.guid, self.id)
 
@@ -319,6 +331,29 @@ def list_flat_properties(props):
             yield result
 
 
+class UnityPropertyReference:
+    def __init__(self, obj, name, ref):
+        self.object = obj
+        self.name = name
+        self.ref = ref
+
+    @property
+    def is_missing(self):
+        return self.ref.is_missing
+
+    def __repr__(self):
+        return "{status} {object} &{guid:x}:{id:d} {name}: {ref}\n in {path}".format(
+            status="Missing reference" if self.is_missing else "ref",
+            object=self.object.type,
+            guid=self.object.ref.guid,
+            id=self.object.ref.id,
+            name=self.name,
+            ref=self.ref,
+            path=os.path.relpath(
+                self.object.asset.path, self.object.asset.db.root_dir)
+        )
+
+
 class UnitySceneGraphObject:
     def __init__(self, asset, ref, object_type, properties):
         self.asset = asset
@@ -326,6 +361,13 @@ class UnitySceneGraphObject:
         self.type = object_type
         self.properties = properties
         self._flat_properties = None
+
+    def get_references(self):
+        return [
+            UnityPropertyReference(self, name, ref)
+            for name, ref in self.flat_properties.items()
+            if type(ref) == UnityFileRef
+        ]
 
     @property
     def flat_properties(self):
@@ -359,13 +401,22 @@ class UnityAssetSceneGraph(UnityAsset):
             return self.objects[str(object_id)]
         if int(object_id) in self.objects:
             return self.objects[int(object_id)]
-        # if self.objects:
-        #     print("Could not locate '%s' in '%s' (keys: %s)" % (
-        #         object_id, self.path, self.objects.keys()))
-        # else:
-        #     print("Could not locate '%s': '%s' is not yet loaded!" % (
-        #         object_id, self.path))
         return None
+
+    def get_all_refs(self):
+        if not self.objects:
+            self.load()
+            self.db.update_asset(self)
+        refs = []
+        for obj in self.objects.values():
+            refs += obj.get_references()
+        return refs
+
+    def get_missing_refs(self):
+        return [
+            ref for ref in self.get_all_refs()
+            if ref.is_missing
+        ]
 
     @property
     def is_loaded(self):
@@ -478,6 +529,9 @@ class UnityAssetDB:
         self.logger = logger
 
     def find_asset_by_guid(self, guid):
+        if guid is None:
+            return None
+
         if type(guid) != str:
             guid = "{:x}".format(guid)
         if guid in self.assets_by_guid:
@@ -559,6 +613,41 @@ class UnityAssetDB:
         self.run_asset_update_parallel(
             parallel_job_load_asset,
             lambda asset: asset.loadable and not asset.is_loaded)
+
+    def get_all_refs(self):
+        refs = []
+        for asset in self.assets_by_path.values():
+            if asset.loadable:
+                refs += asset.get_all_refs()
+        return refs
+
+    def get_all_missing_refs(self):
+        return [
+            ref for ref in self.get_all_refs()
+            if ref.is_missing
+        ]
+
+    def summarize_missing_refs(self):
+        assets = list(self.assets_by_path.values())
+        assets_missing_refs_count = 0
+        missing_ref_total = 0
+        for asset in assets:
+            if not asset.loadable:
+                continue
+            missing_refs = asset.get_missing_refs()
+            if len(missing_refs) > 0:
+                assets_missing_refs_count += 1
+                print("%s has %s missing ref(s):" % (
+                    asset.path, len(missing_refs)))
+                for ref in missing_refs:
+                    missing_ref_total += 1
+                    print("  {type} {id} {name}: {ref}".format(
+                        type=ref.object.type,
+                        id=ref.object.ref.id,
+                        name=ref.name,
+                        ref=ref.ref))
+        print("%d / %d asset(s) are missing a total of %d references" % (
+            assets_missing_refs_count, len(assets), missing_ref_total))
 
 
 pool = None
@@ -685,10 +774,14 @@ if __name__ == '__main__':
     scanner.scan_all()
     assets = {asset for asset in db.assets_by_path.values(
     ) if asset.asset_type != UnityDirectoryAsset}
-    for asset in assets:
-        if asset.loadable:
-            print(asset)
+    # for asset in assets:
+    #     if asset.loadable:
+    #         print(asset)
     print("%d asset(s)" % len(assets))
+
+    db.summarize_missing_refs()
+
+
 
     # ASSET = "/Users/semery/projects/glitch-escape/Assets/GlitchEscape/Cutscenes/Cutscenes.prefab"
     # print(ASSET)
